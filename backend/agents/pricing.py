@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from backend.models.schemas import LineItem
 
@@ -134,18 +134,18 @@ async def price_line_items(line_items: list[LineItem]) -> list[LineItem]:
     if not line_items:
         return []
 
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("GROQ_API_KEY environment variable is not set")
+        raise ValueError("OPENAI_API_KEY environment variable is not set")
 
-    client = AsyncGroq(api_key=api_key)
+    client = AsyncOpenAI(api_key=api_key)
     prompt = _build_prompt(line_items)
     logger.info("Requesting prices for %d line items from Groq", len(line_items))
 
     try:
         # tool_choice="required" forces Groq to reply with set_item_price calls, not plain text.
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             tools=SET_ITEM_PRICE_TOOLS,
             tool_choice="required",

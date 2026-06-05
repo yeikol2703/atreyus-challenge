@@ -1,8 +1,6 @@
-"""Coordinates RFP analysis: reads a PDF, asks the LLM to extract materials, then prices them.
-
-This file is the main pipeline. It streams progress events so the frontend can show each step.
-The LLM returns structured tool calls (project name + line items) that we turn into a bid summary.
-"""
+# Coordinates RFP analysis: reads a PDF, asks the LLM to extract materials, then prices them.
+# This file is the main pipeline. It streams progress events so the frontend can show each step.
+# The LLM returns structured tool calls (project name + line items) that we turn into a bid summary.
 from __future__ import annotations
 
 import io
@@ -16,7 +14,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import pypdf
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from backend.agents.pricing import price_line_items
 from backend.models.schemas import AgentEvent, BidSummary, LineItem
@@ -75,21 +73,22 @@ EXTRACTION_TOOLS = [
 
 EXTRACTION_PROMPT = (Path(__file__).parent / "prompts" / "extraction.txt").read_text()
 
+# One function call returned by the LLM (name + parsed JSON arguments).
 @dataclass
 class _ToolCall:
-    """One function call returned by the LLM (name + parsed JSON arguments)."""
     name: str
     args: dict[str, Any]
 
+# Pull plain text out of every page in the PDF.
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Pull plain text out of every page in the PDF."""
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
+# Combine the system instructions with the actual document text.
 def _build_extraction_prompt(pdf_text: str) -> str:
-    """Combine the system instructions with the actual document text."""
     return f"{EXTRACTION_PROMPT}\n\nRFP document text:\n\n{pdf_text}"
 
+# Build a single progress event the frontend can display.
 def _make_event(
     run_id: str,
     event_type: Literal["started", "extracting", "pricing", "complete", "error"],
@@ -97,7 +96,6 @@ def _make_event(
     message: str,
     data: dict | None = None,
 ) -> AgentEvent:
-    """Build a single progress event the frontend can display."""
     return AgentEvent(
         run_id=run_id,
         event_type=event_type,
@@ -106,13 +104,13 @@ def _make_event(
         data=data,
     )
 
+# Guess a project name from the PDF filename when the LLM does not provide one.
 def _default_project_name(pdf_filename: str) -> str:
-    """Guess a project name from the PDF filename when the LLM does not provide one."""
     stem = Path(pdf_filename).stem.replace("_", " ").replace("-", " ")
     return stem.title() or "Untitled Project"
 
+# Read tool calls from the Groq response and parse each call's JSON arguments.
 def _extract_tool_calls(response: Any) -> list[_ToolCall]:
-    """Read tool calls from the Groq response and parse each call's JSON arguments."""
     if not response.choices:
         raise ValueError("Groq returned no choices")
 
@@ -131,8 +129,8 @@ def _extract_tool_calls(response: Any) -> list[_ToolCall]:
         )
     return parsed
 
+# Turn LLM tool calls into LineItem objects and an optional project name.
 def _parse_extraction_calls(tool_calls: list[_ToolCall]) -> tuple[list[LineItem], str | None]:
-    """Turn LLM tool calls into LineItem objects and an optional project name."""
     line_items: list[LineItem] = []
     project_name: str | None = None
 
@@ -175,26 +173,26 @@ def _parse_extraction_calls(tool_calls: list[_ToolCall]) -> tuple[list[LineItem]
 
     return line_items, project_name
 
+# Send PDF text to Groq and return extracted line items plus a project name.
 async def _extract_line_items_from_pdf(
     pdf_bytes: bytes,
     pdf_filename: str,
 ) -> tuple[list[LineItem], str]:
-    """Send PDF text to Groq and return extracted line items plus a project name."""
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("GROQ_API_KEY environment variable is not set")
+        raise ValueError("OPENAI_API_KEY environment variable is not set")
 
     pdf_text = _extract_pdf_text(pdf_bytes)
     if not pdf_text.strip():
         raise ValueError("PDF contains no extractable text")
 
-    client = AsyncGroq(api_key=api_key)
+    client = AsyncOpenAI(api_key=api_key)
     prompt = _build_extraction_prompt(pdf_text)
     logger.info("Extracting line items from PDF: %s", pdf_filename)
 
     try:
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             tools=EXTRACTION_TOOLS,
             tool_choice="required",
@@ -213,12 +211,12 @@ async def _extract_line_items_from_pdf(
     )
     return line_items, final_name
 
+# Run the full pipeline and yield progress events, then the final bid summary.
 async def run_analysis(
     pdf_bytes: bytes,
     pdf_filename: str,
     run_id: str,
 ) -> AsyncGenerator[AgentEvent | BidSummary, None]:
-    """Run the full pipeline and yield progress events, then the final bid summary."""
     try:
         yield _make_event(
             run_id,
