@@ -1,3 +1,8 @@
+"""Coordinates RFP analysis: reads a PDF, asks the LLM to extract materials, then prices them.
+
+This file is the main pipeline. It streams progress events so the frontend can show each step.
+The LLM returns structured tool calls (project name + line items) that we turn into a bid summary.
+"""
 from __future__ import annotations
 
 import io
@@ -18,6 +23,7 @@ from backend.models.schemas import AgentEvent, BidSummary, LineItem
 
 logger = logging.getLogger(__name__)
 
+# Tool definitions the LLM must call to report what it found in the PDF.
 EXTRACTION_TOOLS = [
     {
         "type": "function",
@@ -67,32 +73,22 @@ EXTRACTION_TOOLS = [
     },
 ]
 
-EXTRACTION_PROMPT = (
-    "You are a construction bid analyst. Read the attached RFP document text and extract every "
-    "construction material and quantified line item you can find.\n\n"
-    "Instructions:\n"
-    "1. If a project name is present, call set_project_name once.\n"
-    "2. For each distinct material or line item, call add_line_item with description, "
-    "quantity, unit, and your extraction confidence (0 to 1).\n"
-    "3. Include all items even if quantities are approximate.\n"
-    "4. Do not invent items that are not supported by the document."
-)
-
+EXTRACTION_PROMPT = (Path(__file__).parent / "prompts" / "extraction.txt").read_text()
 
 @dataclass
 class _ToolCall:
+    """One function call returned by the LLM (name + parsed JSON arguments)."""
     name: str
     args: dict[str, Any]
 
-
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Pull plain text out of every page in the PDF."""
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
-
 def _build_extraction_prompt(pdf_text: str) -> str:
+    """Combine the system instructions with the actual document text."""
     return f"{EXTRACTION_PROMPT}\n\nRFP document text:\n\n{pdf_text}"
-
 
 def _make_event(
     run_id: str,
@@ -101,6 +97,7 @@ def _make_event(
     message: str,
     data: dict | None = None,
 ) -> AgentEvent:
+    """Build a single progress event the frontend can display."""
     return AgentEvent(
         run_id=run_id,
         event_type=event_type,
@@ -109,44 +106,47 @@ def _make_event(
         data=data,
     )
 
-
 def _default_project_name(pdf_filename: str) -> str:
+    """Guess a project name from the PDF filename when the LLM does not provide one."""
     stem = Path(pdf_filename).stem.replace("_", " ").replace("-", " ")
     return stem.title() or "Untitled Project"
 
-
 def _extract_tool_calls(response: Any) -> list[_ToolCall]:
+    """Read tool calls from the Groq response and parse each call's JSON arguments."""
     if not response.choices:
         raise ValueError("Groq returned no choices")
 
-    tool_calls = response.choices[0].message.tool_calls
-    if not tool_calls:
+    raw_calls = response.choices[0].message.tool_calls
+    if not raw_calls:
         raise ValueError("Groq returned no tool calls")
 
-    return [
-        _ToolCall(
-            name=tool_call.function.name,
-            args=json.loads(tool_call.function.arguments),
+    parsed: list[_ToolCall] = []
+    for call in raw_calls:
+        # Each tool call stores its arguments as a JSON string — parse it into a dict.
+        parsed.append(
+            _ToolCall(
+                name=call.function.name,
+                args=json.loads(call.function.arguments),
+            )
         )
-        for tool_call in tool_calls
-    ]
+    return parsed
 
-
-def _parse_extraction_calls(function_calls: list[_ToolCall]) -> tuple[list[LineItem], str | None]:
+def _parse_extraction_calls(tool_calls: list[_ToolCall]) -> tuple[list[LineItem], str | None]:
+    """Turn LLM tool calls into LineItem objects and an optional project name."""
     line_items: list[LineItem] = []
     project_name: str | None = None
 
-    for function_call in function_calls:
-        args = dict(function_call.args)
+    for call in tool_calls:
+        args = dict(call.args)
 
-        if function_call.name == "set_project_name":
+        if call.name == "set_project_name":
             name = args.get("project_name")
             if name:
                 project_name = str(name).strip()
             continue
 
-        if function_call.name != "add_line_item":
-            logger.warning("Ignoring unexpected tool call: %s", function_call.name)
+        if call.name != "add_line_item":
+            logger.warning("Ignoring unexpected tool call: %s", call.name)
             continue
 
         description = args.get("description")
@@ -165,6 +165,7 @@ def _parse_extraction_calls(function_calls: list[_ToolCall]) -> tuple[list[LineI
                 description=str(description).strip(),
                 quantity=float(quantity),
                 unit=str(unit).strip(),
+                # Keep confidence between 0 and 1 even if the model sends a bad value.
                 confidence=max(0.0, min(1.0, float(confidence))),
             )
         )
@@ -174,11 +175,11 @@ def _parse_extraction_calls(function_calls: list[_ToolCall]) -> tuple[list[LineI
 
     return line_items, project_name
 
-
 async def _extract_line_items_from_pdf(
     pdf_bytes: bytes,
     pdf_filename: str,
 ) -> tuple[list[LineItem], str]:
+    """Send PDF text to Groq and return extracted line items plus a project name."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise ValueError("GROQ_API_KEY environment variable is not set")
@@ -204,20 +205,20 @@ async def _extract_line_items_from_pdf(
 
     tool_calls = _extract_tool_calls(response)
     line_items, project_name = _parse_extraction_calls(tool_calls)
-    resolved_project_name = project_name or _default_project_name(pdf_filename)
+    final_name = project_name or _default_project_name(pdf_filename)
     logger.info(
         "Extracted %d line items for project '%s'",
         len(line_items),
-        resolved_project_name,
+        final_name,
     )
-    return line_items, resolved_project_name
-
+    return line_items, final_name
 
 async def run_analysis(
     pdf_bytes: bytes,
     pdf_filename: str,
     run_id: str,
 ) -> AsyncGenerator[AgentEvent | BidSummary, None]:
+    """Run the full pipeline and yield progress events, then the final bid summary."""
     try:
         yield _make_event(
             run_id,
@@ -225,7 +226,6 @@ async def run_analysis(
             "orchestrator",
             "Starting RFP analysis...",
         )
-
         yield _make_event(
             run_id,
             "extracting",
