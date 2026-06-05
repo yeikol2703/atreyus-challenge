@@ -6,6 +6,8 @@ Atreyus is a multi-agent system that ingests construction RFP PDFs and produces 
 
 Built as a technical interview demo: two specialized agents orchestrated in a linear pipeline, typed Pydantic schemas end-to-end, and a React frontend for upload, live streaming, and run history.
 
+Live demo: https://atreyus-challenge.vercel.app
+
 ## Architecture
 
 ```
@@ -109,23 +111,6 @@ npm run dev
 python -m pytest backend/tests/ -v
 ```
 
-## Deploy
-
-### Backend — Railway
-1. Connect your GitHub repo on [Railway](https://railway.app)
-2. Add environment variables:
-   - `OPENAI_API_KEY` — your OpenAI API key
-   - `ALLOWED_ORIGINS` — your Vercel frontend URL
-3. Railway auto-detects the Procfile and deploys
-
-### Frontend — Vercel
-1. Import your GitHub repo on [Vercel](https://vercel.com)
-2. Set Root Directory to `frontend`
-3. Add environment variable:
-   - `VITE_API_URL` — your Railway backend URL + `/api`
-4. Deploy
-
-Live demo: https://atreyus-challenge.vercel.app
 
 ## Key Design Decisions
 
