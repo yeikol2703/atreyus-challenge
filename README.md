@@ -14,13 +14,13 @@ User uploads PDF
       ▼
 ┌─────────────────────┐
 │  Orchestrator Agent  │  ← extracts line items from PDF via tool calling
-│  (Groq / Llama 3)   │
+│  (OpenAI / GPT-4o-mini)   │
 └────────┬────────────┘
          │ delegates pricing
          ▼
 ┌─────────────────────┐
 │   Pricing Agent      │  ← estimates market prices via tool calling
-│  (Groq / Llama 3)   │
+│  (OpenAI / GPT-4o-mini)   │
 └────────┬────────────┘
          │ returns priced items
          ▼
@@ -36,7 +36,7 @@ Agents communicate via direct async function calls with typed Pydantic interface
 | Layer | Choice | Why |
 |-------|--------|-----|
 | Backend | FastAPI + Python 3.11 | Async-native, automatic OpenAPI docs, great SSE support |
-| Agents | Groq (Llama 3.3 70b) with tool calling | Fast inference, structured function calls for extraction and pricing |
+| Agents | OpenAI GPT-4o-mini with tool calling | Structured function calls, no tool call limits |
 | Schemas | Pydantic v2 | Shared typed contracts between agents, API, and DB serialization |
 | Database | SQLite + SQLModel | Zero-config persistence for demo runs and results |
 | Streaming | Server-Sent Events (SSE) | Simple one-way progress stream from backend to browser |
@@ -78,13 +78,13 @@ All commands are run from the project root unless noted.
 ### Backend
 
 ```bash
-pip install fastapi uvicorn sqlmodel groq pypdf pydantic python-dotenv pytest pytest-asyncio
+pip install fastapi uvicorn sqlmodel openai pypdf pydantic python-dotenv pytest pytest-asyncio
 ```
 
 Create `.env` in project root:
 
 ```
-GROQ_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
 ```
 
 Run from the project root:
@@ -109,6 +109,24 @@ npm run dev
 python -m pytest backend/tests/ -v
 ```
 
+## Deploy
+
+### Backend — Railway
+1. Connect your GitHub repo on [Railway](https://railway.app)
+2. Add environment variables:
+   - `OPENAI_API_KEY` — your OpenAI API key
+   - `ALLOWED_ORIGINS` — your Vercel frontend URL
+3. Railway auto-detects the Procfile and deploys
+
+### Frontend — Vercel
+1. Import your GitHub repo on [Vercel](https://vercel.com)
+2. Set Root Directory to `frontend`
+3. Add environment variable:
+   - `VITE_API_URL` — your Railway backend URL + `/api`
+4. Deploy
+
+Live demo: https://atreyus-challenge.vercel.app
+
 ## Key Design Decisions
 
 **Why direct function calls between agents, not a message bus?**  
@@ -131,8 +149,6 @@ Zero infrastructure for a demo. SQLModel uses the same interface for both —
 swapping to Postgres in production is a one-line connection string change.
 
 ## Trade-offs & Known Limitations
-
-- **Tool call limit**: Groq/Llama caps function calls per response (~5). PDFs with many line items may not get all items extracted or priced. Fix in production: batch items or use a model without this limit (Claude, GPT-4).
 
 - **No auth**: Authentication and multi-tenancy are out of scope for this demo.
 
